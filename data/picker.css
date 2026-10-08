@@ -1,0 +1,20 @@
+/* Structure only; colors, alphas and font size come from the Omarchy shell theme (src/theme.rs). */
+window.omaroute { background: transparent; box-shadow: none; border-radius: 0; }
+window.omaroute * { font-family: "JetBrains Mono NF", "JetBrainsMono Nerd Font", monospace; }
+
+.root { color: @menu_text; border: 2px solid; border-radius: 0; padding: 14px; min-width: 360px; }
+.title { font-weight: bold; margin-bottom: 12px; }
+.host, .hint, .num { color: @muted; }
+.host { margin-bottom: 8px; }
+.hint { margin-top: 10px; }
+
+button.browser { background: none; color: @menu_text; border: 1px solid transparent; box-shadow: none; outline: none; border-radius: 0; padding: 6px 10px; min-height: 0; transition: none; }
+button.browser:hover { background: alpha(@menu_text, 0.08); }
+button.browser.selected, button.browser.selected label { color: @menu_sel_text; }
+button.browser.selected { border-style: solid; }
+
+.scopes { margin-top: 10px; padding-top: 10px; border-top: 1px solid @muted; }
+checkbutton { color: @menu_text; padding: 2px 0; }
+checkbutton:checked { color: @menu_sel_text; }
+checkbutton radio { background: alpha(@menu_text, 0.04); border: 1px solid alpha(@menu_text, 0.4); border-radius: 0; color: @menu_bg; min-width: 12px; min-height: 12px; -gtk-icon-source: none; box-shadow: none; }
+checkbutton radio:checked { background: @menu_sel_text; border-color: @menu_sel_text; }

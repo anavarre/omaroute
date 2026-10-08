@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Omaroute
+Comment=Route links to the right browser
+Exec=omaroute %u
+Terminal=false
+NoDisplay=true
+Categories=Network;WebBrowser;
+MimeType=x-scheme-handler/http;x-scheme-handler/https;

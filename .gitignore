@@ -1,0 +1,15 @@
+# Cargo build output
+/target
+
+# makepkg artifacts (PKGBUILD builds in-tree via $startdir)
+/pkg/
+/*.pkg.tar*
+/*.src.tar*
+/*.log
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
