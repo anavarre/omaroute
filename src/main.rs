@@ -124,7 +124,12 @@ fn checked_browser(id: &str) -> String {
 
 /// Quote a path for a desktop-entry Exec= field: backslash-escape the characters that are
 /// special inside double quotes, then double `%` so nothing reads as a field code.
+/// Paths made only of plain characters are left bare: `xdg-settings` doesn't unquote Exec= and
+/// would reject `"/usr/bin/omaroute"` as a missing command.
 fn exec_quote(path: &str) -> String {
+    if path.chars().all(|c| c.is_ascii_alphanumeric() || "/._+-".contains(c)) {
+        return path.to_owned();
+    }
     let mut out = String::with_capacity(path.len() + 2);
     out.push('"');
     for c in path.chars() {
@@ -137,13 +142,20 @@ fn exec_quote(path: &str) -> String {
     out.replace('%', "%%")
 }
 
+/// `xdg-settings` refuses to touch the default browser while $BROWSER is set (Omarchy sets it).
+fn xdg_settings() -> Command {
+    let mut c = Command::new("xdg-settings");
+    c.env_remove("BROWSER");
+    c
+}
+
 fn setup(undo: bool) {
     let desktop = data_dir().join("applications").join(SELF_ID);
     let tpl = config_dir().join("omarchy/themed/omaroute.css.tpl");
     let prev_file = state_dir().join("omaroute/previous-browser");
     if undo {
         if let Ok(prev) = fs::read_to_string(&prev_file) {
-            let _ = Command::new("xdg-settings").args(["set", "default-web-browser", prev.trim()]).status();
+            let _ = xdg_settings().args(["set", "default-web-browser", prev.trim()]).status();
         }
         for f in [&desktop, &tpl, &prev_file] {
             let _ = fs::remove_file(f);
@@ -156,13 +168,13 @@ fn setup(undo: bool) {
     };
     write(&desktop, &DESKTOP.replace("Exec=omaroute", &format!("Exec={}", exec_quote(&exe.display().to_string()))));
     let _ = fs::remove_file(&tpl); // legacy theme template; the picker now reads the shell theme directly
-    let current = Command::new("xdg-settings").args(["get", "default-web-browser"]).output().ok()
+    let current = xdg_settings().args(["get", "default-web-browser"]).output().ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()).unwrap_or_default();
     if !current.is_empty() && current != SELF_ID && !prev_file.exists() {
         write(&prev_file, &current);
     }
     let _ = Command::new("update-desktop-database").arg(data_dir().join("applications")).status();
-    if !Command::new("xdg-settings").args(["set", "default-web-browser", SELF_ID]).status().is_ok_and(|s| s.success()) {
+    if !xdg_settings().args(["set", "default-web-browser", SELF_ID]).status().is_ok_and(|s| s.success()) {
         fail("xdg-settings failed");
     }
     println!("omaroute: set as default browser (previous: {current})");
@@ -259,7 +271,7 @@ mod tests {
 
     #[test]
     fn exec_quote_escapes_reserved_characters() {
-        assert_eq!(exec_quote("/usr/bin/omaroute"), "\"/usr/bin/omaroute\"");
+        assert_eq!(exec_quote("/usr/bin/omaroute"), "/usr/bin/omaroute");
         assert_eq!(exec_quote("/a dir/omaroute"), "\"/a dir/omaroute\"");
         assert_eq!(exec_quote(r#"/a"b/$x/`y/\z"#), r#""/a\"b/\$x/\`y/\\z""#);
         assert_eq!(exec_quote("/opt/100%u/bin"), "\"/opt/100%%u/bin\"");

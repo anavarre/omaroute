@@ -436,7 +436,7 @@ fn setup_installs_entry_remembers_previous_browser_and_registers() {
 
     let entry = fs::read_to_string(desktop_file(&sb)).unwrap();
     let exe = env!("CARGO_BIN_EXE_omaroute");
-    assert!(entry.contains(&format!("Exec=\"{exe}\" %u")), "{entry}");
+    assert!(entry.contains(&format!("Exec={exe} %u")), "{entry}");
     assert!(entry.contains("x-scheme-handler/https"));
     assert_eq!(fs::read_to_string(sb.path("state/omaroute/previous-browser")).unwrap(), "firefox.desktop");
     assert_eq!(sb.log("default-browser").trim(), "omaroute.desktop");

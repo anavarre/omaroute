@@ -205,6 +205,13 @@ Linux gives a URL handler no information about who sent the link. omaroute uses 
 - Outside Hyprland there is no app information; only domain rules and the default apply.
 - Use `omaroute <url> --app NAME` to override the detected app.
 
+omaroute only sees links that an app hands to the system (via `xdg-open` or the default-browser setting). Some apps never do, so omaroute can't route their links:
+
+- **Chromium web apps (`--app` windows)**: Chromium often opens external links in its own browser instead of calling `xdg-open`, so omaroute never sees the click.
+- **Electron and other apps**: these should go through `xdg-open`. If one doesn't, it may be caching the old default browser or using its own link handler; check its settings and restart it after running `omaroute setup`.
+
+To check whether an app reaches omaroute, run `journalctl --user -f | grep -i omaroute` and click a link in it. If nothing shows up, the app is not calling omaroute.
+
 ## Security
 
 - Only `http` and `https` URLs are accepted; whitespace/control characters are rejected.
