@@ -2,6 +2,8 @@
 
 Per-app link routing for [Omarchy](https://omarchy.org) (Hyprland), in the spirit of [Choosy](https://choosy.app/) and [Velja](https://sindresorhus.com/velja).
 
+![omaroute preview](preview.png)
+
 omaroute registers itself as your default browser. When you click a link, it looks at which app the click came from and opens the link in the browser you chose for that app. The first time it sees a new app (or domain), it shows a small centered picker. Your choice can be remembered, so you are only asked once.
 
 - Route links per app (Slack → Chrome), per domain (`github.com` → Firefox), or per app + domain.
