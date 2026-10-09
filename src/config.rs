@@ -60,17 +60,22 @@ impl Config {
         let path = config_path();
         let parent = path.parent().unwrap();
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        let tmp = parent.join(".config.toml.tmp");
         let text = toml::to_string_pretty(self).map_err(|e| e.to_string())?;
-        let mut f = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&tmp)
-            .map_err(|e| e.to_string())?;
-        f.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
-        fs::rename(&tmp, &path).map_err(|e| e.to_string())
+        // Per-process temp name so concurrent saves never share a file, and O_EXCL (create_new)
+        // so a pre-existing path, such as a planted symlink, is never followed or truncated and
+        // the 0600 mode always applies. A stale leftover is removed first so O_EXCL can succeed.
+        let tmp = parent.join(format!(".config.toml.{}.tmp", std::process::id()));
+        let _ = fs::remove_file(&tmp);
+        let write = || -> std::io::Result<()> {
+            let mut f = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
+            f.write_all(text.as_bytes())?;
+            f.sync_all()?;
+            fs::rename(&tmp, &path)
+        };
+        write().map_err(|e| {
+            let _ = fs::remove_file(&tmp);
+            e.to_string()
+        })
     }
 
     /// Precedence: app+domain, app, domain, default.
@@ -369,6 +374,24 @@ mod tests {
             with_home(t.path(), || {
                 std::fs::create_dir_all(config_path()).unwrap(); // a directory where the file should be
                 assert!(Config::load().is_err());
+            });
+        }
+
+        #[test]
+        fn save_never_follows_a_planted_symlink_at_the_temp_path() {
+            let t = TempDir::new("cfg-symlink");
+            with_home(t.path(), || {
+                let dir = config_path().parent().unwrap().to_path_buf();
+                std::fs::create_dir_all(&dir).unwrap();
+                let decoy = t.path().join("decoy");
+                std::fs::write(&decoy, "keep me").unwrap();
+                let tmp = dir.join(format!(".config.toml.{}.tmp", std::process::id()));
+                std::os::unix::fs::symlink(&decoy, &tmp).unwrap();
+                cfg().save().unwrap();
+                assert_eq!(std::fs::read_to_string(&decoy).unwrap(), "keep me");
+                assert!(!tmp.exists() && std::fs::symlink_metadata(&tmp).is_err());
+                assert_eq!(Config::load().unwrap(), cfg());
+                assert_eq!(std::fs::metadata(config_path()).unwrap().permissions().mode() & 0o777, 0o600);
             });
         }
 

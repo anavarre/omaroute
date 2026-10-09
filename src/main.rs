@@ -37,22 +37,30 @@ fn normalize(id: &str) -> String {
     if id.ends_with(".desktop") { id.to_owned() } else { format!("{id}.desktop") }
 }
 
-fn app_info(id: &str) -> Option<gio_unix::DesktopAppInfo> {
-    if id == SELF_ID { None } else { gio_unix::DesktopAppInfo::new(id) }
-}
-
-fn launch(id: &str, url: &str) {
-    let Some(info) = app_info(id) else { fail(&format!("browser '{id}' not found")) };
-    if let Err(e) = info.launch_uris(&[url], None::<&gio::AppLaunchContext>) {
-        fail(&format!("could not launch {id}: {e}"));
-    }
-}
-
 /// Only real browsers: desktop entries in the freedesktop `WebBrowser` category.
 fn is_browser(a: &gio::AppInfo) -> bool {
     a.downcast_ref::<gio_unix::DesktopAppInfo>()
         .and_then(|d| d.categories())
         .is_some_and(|c| c.split(';').any(|x| x == "WebBrowser"))
+}
+
+/// The desktop entry a link may be handed to: it must exist, be a web browser and not be
+/// omaroute itself. Applied both when a rule is written and when one is used, so a URL from an
+/// untrusted app only ever reaches a browser, whatever the config file says.
+fn browser_info(id: &str) -> Result<gio_unix::DesktopAppInfo, String> {
+    let info = if id == SELF_ID { None } else { gio_unix::DesktopAppInfo::new(id) };
+    let info = info.ok_or_else(|| format!("browser '{id}' not found (see `omaroute browsers`)"))?;
+    if !is_browser(info.upcast_ref()) {
+        return Err(format!("'{id}' is not a web browser (see `omaroute browsers`)"));
+    }
+    Ok(info)
+}
+
+fn launch(id: &str, url: &str) {
+    let info = browser_info(id).unwrap_or_else(|e| fail(&e));
+    if let Err(e) = info.launch_uris(&[url], None::<&gio::AppLaunchContext>) {
+        fail(&format!("could not launch {id}: {e}"));
+    }
 }
 
 fn browsers() -> Vec<picker::Browser> {
@@ -118,7 +126,7 @@ fn load() -> Config {
 
 fn checked_browser(id: &str) -> String {
     let id = normalize(id);
-    if app_info(&id).is_none() { fail(&format!("unknown browser '{id}' (see `omaroute browsers`)")) }
+    browser_info(&id).unwrap_or_else(|e| fail(&e));
     id
 }
 
@@ -163,6 +171,11 @@ fn setup(undo: bool) {
         return println!("omaroute: removed");
     }
     let exe = env::current_exe().unwrap_or_else(|e| fail(&e.to_string()));
+    // A desktop entry value cannot carry a newline or other control character; one in the path
+    // would end the Exec= line early and let the rest be read as further keys.
+    if exe.display().to_string().chars().any(char::is_control) {
+        fail("the path to this binary contains control characters; move omaroute somewhere plain and re-run setup");
+    }
     let write = |path: &std::path::Path, text: &str| {
         fs::create_dir_all(path.parent().unwrap()).and_then(|_| fs::write(path, text)).unwrap_or_else(|e| fail(&format!("{}: {e}", path.display())))
     };
@@ -236,8 +249,8 @@ mod tests {
     }
 
     #[test]
-    fn app_info_never_resolves_self() {
-        assert!(app_info(SELF_ID).is_none());
+    fn browser_info_never_resolves_self() {
+        assert!(browser_info(SELF_ID).unwrap_err().contains("not found"));
     }
 
     #[test]

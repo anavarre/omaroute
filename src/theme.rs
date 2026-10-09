@@ -42,7 +42,9 @@ impl Tokens {
 
     fn num(&self, section: &str, key: &str) -> Option<f64> {
         let v = self.0.get(section)?.as_table()?.get(key)?;
-        v.as_float().or_else(|| v.as_integer().map(|i| i as f64))
+        // TOML allows `inf`/`nan`; neither is a usable size or alpha and both would render as
+        // broken CSS, so they fall back to the default like any other bad value.
+        v.as_float().or_else(|| v.as_integer().map(|i| i as f64)).filter(|n| n.is_finite())
     }
 
     /// A color token, following `hyprland.*` references; gradients collapse to their first color.
@@ -70,7 +72,7 @@ fn render(table: Table) -> String {
     let t = Tokens(table);
     let m = |k: &str, d: &str| t.color("menu", k, d);
     let a = |k: &str, d: f64| t.alpha("menu", k, d);
-    let font = t.num("font", "base-size").unwrap_or(12.0).max(1.0);
+    let font = t.num("font", "base-size").unwrap_or(12.0).clamp(1.0, 128.0);
     let fg = m("text", "#cdd6f4");
     format!(
         "@define-color menu_bg {bg};\n@define-color menu_text {fg};\n@define-color menu_border {border};\n\
@@ -111,6 +113,17 @@ mod tests {
         assert!(css.contains("alpha(@menu_bg, 1)"));
         assert!(css.contains("alpha(@menu_sel_bg, 0.08)"));
         assert!(css.contains("alpha(@menu_sel_border, 0.25)"));
+    }
+
+    #[test]
+    fn non_finite_and_absurd_numbers_fall_back_to_defaults() {
+        let css = render(t("[menu]\nbackground-alpha = nan\nborder-alpha = inf\n[font]\nbase-size = -inf"));
+        assert!(css.contains("alpha(@menu_bg, 1)"), "{css}");
+        assert!(css.contains("alpha(@menu_border, 1)"), "{css}");
+        assert!(css.contains("font-size: 12px;"), "{css}");
+        assert!(!css.contains("NaN") && !css.contains("inf"), "{css}");
+        let css = render(t("[font]\nbase-size = 100000"));
+        assert!(css.contains("font-size: 128px;"), "{css}");
     }
 
     #[test]

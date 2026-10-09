@@ -220,7 +220,7 @@ To check whether an app reaches omaroute, run `journalctl --user -f | grep -i om
 - Browsers are launched through GIO desktop entries; no shell is involved.
 - The URL is passed to the browser untouched; only the host is parsed, for rule matching.
 - The config is written atomically with mode `0600`.
-- omaroute refuses to route to itself.
+- Links are only ever handed to desktop entries in the `WebBrowser` category. This is checked when a rule is written (`set`, `default`, the picker) and again when it is used, so a hand-edited config cannot point links at an arbitrary application. omaroute also refuses to route to itself.
 
 ## Development
 
@@ -263,7 +263,7 @@ Layout:
 - **Links don't go through omaroute**: run `xdg-settings get default-web-browser`; it should print `omaroute.desktop`. If not, run `omaroute setup` again.
 - **"no browsers found"**: install a browser whose desktop entry has the `WebBrowser` category; check with `omaroute browsers`.
 - **Wrong app is detected**: check the class with `hyprctl activewindow`, and use that exact (lowercase) value in `--app`.
-- **"unknown browser"**: use an ID from `omaroute browsers`.
+- **"browser ... not found" or "... is not a web browser"**: use an ID from `omaroute browsers`; only desktop entries in the `WebBrowser` category are accepted.
 - **Moved the binary after `setup`**: re-run `omaroute setup` from the new location so the desktop entry's `Exec` path is updated.
 
 ## License

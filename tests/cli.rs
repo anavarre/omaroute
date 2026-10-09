@@ -126,9 +126,25 @@ fn set_requires_exactly_one_browser() {
 #[test]
 fn set_rejects_unknown_browsers_and_non_browsers_alike() {
     let sb = sandbox();
-    sb.run(&["set", "--app", "slack", "nope"]).assert_fail("unknown browser 'nope.desktop'");
-    sb.run(&["set", "--app", "slack", "omaroute"]).assert_fail("unknown browser 'omaroute.desktop'");
+    sb.add_app("editor", "Editor", "Utility;TextEditor;", ""); // handles https but isn't a browser
+    sb.add_app("nocat", "No Category", "", "");
+    sb.run(&["set", "--app", "slack", "nope"]).assert_fail("browser 'nope.desktop' not found");
+    sb.run(&["set", "--app", "slack", "omaroute"]).assert_fail("browser 'omaroute.desktop' not found");
+    sb.run(&["set", "--app", "slack", "editor"]).assert_fail("'editor.desktop' is not a web browser");
+    sb.run(&["set", "--domain", "a.com", "nocat.desktop"]).assert_fail("'nocat.desktop' is not a web browser");
+    sb.run(&["default", "editor"]).assert_fail("'editor.desktop' is not a web browser");
     assert!(!sb.config_file().exists());
+}
+
+#[test]
+fn rule_pointing_at_a_non_browser_is_refused_when_opening_links() {
+    let sb = sandbox();
+    sb.add_app("editor", "Editor", "Utility;TextEditor;", "");
+    sb.write_config("default = \"editor.desktop\"\n[[rule]]\ndomain = \"a.com\"\nbrowser = \"editor.desktop\"\n");
+    sb.run(&["https://a.com/"]).assert_fail("'editor.desktop' is not a web browser");
+    sb.run(&["https://b.com/"]).assert_fail("'editor.desktop' is not a web browser");
+    assert!(sb.log("notifications").contains("not a web browser"));
+    assert!(sb.settle_launches().is_empty());
 }
 
 #[test]
@@ -210,7 +226,7 @@ fn default_get_set_clear() {
 #[test]
 fn default_validates_browser() {
     let sb = sandbox();
-    sb.run(&["default", "nope"]).assert_fail("unknown browser 'nope.desktop'");
+    sb.run(&["default", "nope"]).assert_fail("browser 'nope.desktop' not found");
     assert_eq!(sb.run(&["default"]).stdout(), "\n");
 }
 
