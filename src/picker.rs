@@ -54,7 +54,7 @@ fn display_name(app: &str) -> String {
     c.next().map_or(String::new(), |f| f.to_uppercase().chain(c).collect())
 }
 
-/// The "remember this choice" options, in display order; the second (index 1) is preselected.
+/// The "remember this choice" options, in display order; the first (index 0, "Just this once") is preselected.
 fn scopes_for(app: Option<&str>, host: &str) -> Vec<(String, Scope)> {
     match app {
         Some(a) => {
@@ -97,7 +97,7 @@ fn build(
     window.set_namespace(Some("omaroute"));
 
     let scopes = scopes_for(app, host);
-    let scope_idx = Rc::new(Cell::new(1));
+    let scope_idx = Rc::new(Cell::new(0));
     let selected = Rc::new(Cell::new(0usize));
 
     let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
@@ -229,12 +229,10 @@ mod tests {
     }
 
     #[test]
-    fn preselected_scope_index_is_valid_and_remembers() {
-        // build() preselects index 1, so it must exist and never be "once".
+    fn preselected_scope_is_just_once() {
+        // build() preselects index 0, which must be the non-persistent option.
         for app in [Some("a"), None] {
-            let s = scopes_for(app, "x.com");
-            assert!(s.len() > 1);
-            assert_ne!(s[1].1, Scope::Once);
+            assert_eq!(scopes_for(app, "x.com")[0].1, Scope::Once);
         }
     }
 
