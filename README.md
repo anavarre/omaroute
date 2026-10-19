@@ -62,6 +62,7 @@ cargo build --release --locked
 2. Saves your current default browser to `~/.local/state/omaroute/previous-browser` (only if omaroute is not already the default).
 3. Refreshes the desktop database.
 4. Runs `xdg-settings set default-web-browser omaroute.desktop`.
+5. If a desktop-specific list such as `~/.config/hyprland-mimeapps.list` sets the `http`/`https` handlers (Omarchy's does, to route links through its launcher), puts `omaroute.desktop` first on those lines. That list is read before `mimeapps.list`, so without this it would keep links away from omaroute.
 
 You can confirm with `xdg-settings get default-web-browser`, which should print `omaroute.desktop`.
 
@@ -73,7 +74,7 @@ You can confirm with `xdg-settings get default-web-browser`, which should print 
    omaroute setup --undo
    ```
 
-   This runs `xdg-settings set default-web-browser <previous>`, then deletes `~/.local/share/applications/omaroute.desktop` and the saved previous-browser state.
+   This takes `omaroute.desktop` back off the desktop-specific list, runs `xdg-settings set default-web-browser <previous>`, then deletes `~/.local/share/applications/omaroute.desktop` and the saved previous-browser state.
 
 2. Remove the program:
 

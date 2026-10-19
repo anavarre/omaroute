@@ -151,10 +151,48 @@ fn exec_quote(path: &str) -> String {
 }
 
 /// `xdg-settings` refuses to touch the default browser while $BROWSER is set (Omarchy sets it).
+/// Without $XDG_CURRENT_DESKTOP it reads and writes only mimeapps.list: a `set` never writes the
+/// desktop-specific list, so checking its result through one fails whenever that list names a
+/// handler (Omarchy's does). `claim_desktop_lists` takes care of those lists.
 fn xdg_settings() -> Command {
     let mut c = Command::new("xdg-settings");
-    c.env_remove("BROWSER");
+    c.env_remove("BROWSER").env_remove("XDG_CURRENT_DESKTOP");
     c
+}
+
+/// Desktop-specific lists (`hyprland-mimeapps.list`) are read before mimeapps.list, and Omarchy
+/// uses one to route links through its own launcher. Put omaroute first on each of our handler
+/// lines such a list sets (`claim`), or take exactly that back off (`!claim`); lines it doesn't
+/// set are left to mimeapps.list.
+fn claim_desktop_lists(claim: bool) {
+    let keys: Vec<&str> = DESKTOP.lines().find_map(|l| l.strip_prefix("MimeType=")).unwrap_or_default()
+        .split(';').filter(|k| !k.is_empty()).collect();
+    let ours = format!("{SELF_ID};");
+    for desktop in env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().split(':').filter(|d| !d.is_empty()) {
+        let path = config_dir().join(format!("{}-mimeapps.list", desktop.to_lowercase()));
+        let Ok(text) = fs::read_to_string(&path) else { continue };
+        let mut section = false;
+        let mut out: String = text.lines().map(|line| {
+            if line.starts_with('[') {
+                section = line.trim() == "[Default Applications]";
+            }
+            let new = match line.split_once('=') {
+                Some((key, value)) if section && keys.contains(&key) => match (claim, value.strip_prefix(&ours)) {
+                    (true, _) if value.split(';').next() != Some(SELF_ID) => Some(format!("{key}={ours}{value}")),
+                    (false, Some(rest)) => Some(format!("{key}={rest}")),
+                    _ => None,
+                },
+                _ => None,
+            };
+            new.unwrap_or_else(|| line.to_owned()) + "\n"
+        }).collect();
+        if !text.ends_with('\n') {
+            out.pop();
+        }
+        if out != text {
+            fs::write(&path, out).unwrap_or_else(|e| fail(&format!("{}: {e}", path.display())));
+        }
+    }
 }
 
 fn setup(undo: bool) {
@@ -162,6 +200,7 @@ fn setup(undo: bool) {
     let tpl = config_dir().join("omarchy/themed/omaroute.css.tpl");
     let prev_file = state_dir().join("omaroute/previous-browser");
     if undo {
+        claim_desktop_lists(false);
         if let Ok(prev) = fs::read_to_string(&prev_file) {
             let _ = xdg_settings().args(["set", "default-web-browser", prev.trim()]).status();
         }
@@ -183,13 +222,15 @@ fn setup(undo: bool) {
     let _ = fs::remove_file(&tpl); // legacy theme template; the picker now reads the shell theme directly
     let current = xdg_settings().args(["get", "default-web-browser"]).output().ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()).unwrap_or_default();
-    if !current.is_empty() && current != SELF_ID && !prev_file.exists() {
+    // omarchy-browser.desktop only routes links back to the default browser, so it can't be restored.
+    if !current.is_empty() && current != SELF_ID && current != "omarchy-browser.desktop" && !prev_file.exists() {
         write(&prev_file, &current);
     }
     let _ = Command::new("update-desktop-database").arg(data_dir().join("applications")).status();
     if !xdg_settings().args(["set", "default-web-browser", SELF_ID]).status().is_ok_and(|s| s.success()) {
         fail("xdg-settings failed");
     }
+    claim_desktop_lists(true);
     println!("omaroute: set as default browser (previous: {current})");
 }
 

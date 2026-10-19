@@ -525,3 +525,48 @@ fn setup_undo_keeps_user_config() {
     sb.run(&["setup", "--undo"]).assert_ok();
     assert!(sb.read_config().contains("slack"));
 }
+
+const HYPRLAND_LIST: &str = "\
+# Omarchy routes links through its launcher
+[Default Applications]
+x-scheme-handler/http=omarchy-browser.desktop
+x-scheme-handler/https=omarchy-browser.desktop
+x-scheme-handler/mailto=thunderbird.desktop
+
+[Added Associations]
+x-scheme-handler/http=firefox.desktop
+";
+
+#[test]
+fn setup_puts_omaroute_first_in_the_desktop_specific_list_and_undo_takes_it_back_off() {
+    let sb = sandbox();
+    let list = sb.path("config/hyprland-mimeapps.list");
+    fs::write(&list, HYPRLAND_LIST).unwrap();
+    fs::write(sb.path("log/default-browser"), "firefox.desktop\n").unwrap();
+    let setup = || sb.command().env("XDG_CURRENT_DESKTOP", "Hyprland").arg("setup").output().unwrap();
+
+    assert!(setup().status.success());
+    assert!(setup().status.success(), "idempotent");
+    let claimed = fs::read_to_string(&list).unwrap();
+    assert_eq!(
+        claimed,
+        HYPRLAND_LIST
+            .replace("http=omarchy-browser", "http=omaroute.desktop;omarchy-browser")
+            .replace("https=omarchy-browser", "https=omaroute.desktop;omarchy-browser")
+    );
+    assert_eq!(sb.log("default-browser").trim(), "omaroute.desktop");
+    assert_eq!(fs::read_to_string(sb.path("state/omaroute/previous-browser")).unwrap(), "firefox.desktop");
+
+    let undo = sb.command().env("XDG_CURRENT_DESKTOP", "Hyprland").args(["setup", "--undo"]).output().unwrap();
+    assert!(undo.status.success());
+    assert_eq!(fs::read_to_string(&list).unwrap(), HYPRLAND_LIST);
+    assert_eq!(sb.log("default-browser").trim(), "firefox.desktop");
+}
+
+#[test]
+fn setup_does_not_save_omarchys_router_as_the_previous_browser() {
+    let sb = sandbox();
+    fs::write(sb.path("log/default-browser"), "omarchy-browser.desktop\n").unwrap();
+    sb.run(&["setup"]).assert_ok();
+    assert!(!sb.path("state/omaroute/previous-browser").exists());
+}

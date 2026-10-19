@@ -82,14 +82,16 @@ impl Sandbox {
 
     fn install_stubs(&self) {
         let log = self.path("log");
-        // xdg-settings: `get` prints the stored default, `set` stores it. FAIL_XDG=1 makes `set` fail.
+        // xdg-settings: `get` prints the stored default, `set` stores it. FAIL_XDG=1 makes `set` fail,
+        // as does a set $XDG_CURRENT_DESKTOP: the real one then checks its result through the
+        // desktop-specific list, which it never writes.
         write_exec(
             &self.path("bin/xdg-settings"),
             &format!(
                 r#"echo "xdg-settings $*" >> "{log}/calls"
 case "$1" in
   get) [ -f "{log}/default-browser" ] && read -r v < "{log}/default-browser" && echo "$v" ;;
-  set) [ -n "$FAIL_XDG" ] && exit 1; echo "$3" > "{log}/default-browser" ;;
+  set) [ -n "$FAIL_XDG$XDG_CURRENT_DESKTOP" ] && exit 4; echo "$3" > "{log}/default-browser" ;;
 esac
 exit 0"#,
                 log = log.display()
