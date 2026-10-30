@@ -7,6 +7,7 @@ Per-app link routing for [Omarchy](https://omarchy.org) (Hyprland), in the spiri
 omaroute registers itself as your default browser. When you click a link, it looks at which app the click came from and opens the link in the browser you chose for that app. The first time it sees a new app (or domain), it shows a small centered picker. Your choice can be remembered, so you are only asked once.
 
 - Route links per app (Slack → Chrome), per domain (`github.com` → Firefox), or per app + domain.
+- Route to a specific browser profile (`github.com` → Chrome *Work*, `reddit.com` → Chrome *Perso*).
 - Themed picker that follows your Omarchy shell theme automatically.
 - Plain-TOML config you can edit by hand or sync in your dotfiles.
 - Small, fast, no daemon: it runs only when a link is clicked.
@@ -18,6 +19,7 @@ omaroute registers itself as your default browser. When you click a link, it loo
 - [Uninstall](#uninstall)
 - [Usage](#usage)
 - [CLI reference](#cli-reference)
+- [Browser profiles](#browser-profiles)
 - [Rules and precedence](#rules-and-precedence)
 - [Configuration](#configuration)
 - [Theming](#theming)
@@ -121,7 +123,8 @@ The scope controls what gets remembered:
 omaroute <url> [--app NAME]                      open a link (this is what the system calls)
 omaroute list                                    show rules
 omaroute browsers                                show installed browsers
-omaroute set [--app A] [--domain D] <browser>    add/replace a rule
+omaroute profiles [browser]                      show browser profiles
+omaroute set [--app A] [--domain D] [--profile P] <browser>   add/replace a rule
 omaroute unset [--app A] [--domain D]            remove a rule
 omaroute default [browser|--clear]               get/set the fallback browser
 omaroute setup [--undo]                          register as default browser
@@ -139,6 +142,10 @@ omaroute set --app slack google-chrome             # everything from Slack -> Ch
 omaroute set --app slack --domain github.com firefox
 omaroute set --domain example.org chromium         # example.org from any app
 
+omaroute profiles google-chrome                    # id<TAB>profile<TAB>name
+omaroute set --domain github.com --profile Work google-chrome
+omaroute set --domain reddit.com --profile Perso google-chrome
+
 omaroute unset --app slack                         # remove the Slack-wide rule
 omaroute unset --app slack --domain github.com
 
@@ -152,6 +159,22 @@ omaroute 'https://example.com' --app slack         # open a URL as if it came fr
 ```
 
 `--app` takes the Hyprland window class of the app. Find it with `hyprctl clients` (look at `class:`), for example `slack`, `discord`, `thunderbird`, `com.mitchellh.ghostty`.
+
+## Browser profiles
+
+A rule can name a profile of its browser, so a domain or app always opens in, say, your Work profile:
+
+```sh
+omaroute profiles google-chrome                           # google-chrome.desktop  Default  Work ...
+omaroute set --domain github.com --profile Work google-chrome
+omaroute set --app slack --profile Perso google-chrome
+```
+
+`--profile` takes the profile's name as shown in the browser (case-insensitive) or its ID, and the ID is what gets stored (`profile = "Profile 1"`). It must exist, so a typo is caught when the rule is written, and again when it is used. Rules with a profile follow the same [precedence](#rules-and-precedence) as any other.
+
+When a browser has more than one profile, the picker lists one entry per profile ("Google Chrome — Work"), and remembering a choice stores the profile too.
+
+Supported: Chrome (stable/beta/unstable), Chromium, Brave, Edge and Vivaldi (profile directory via `--profile-directory`, names from `Local State`), and Firefox (`-P`, names from `profiles.ini`). Firefox may refuse to open a profile while another profile's instance is running, so profile routing works best with Chromium-family browsers. `omaroute default` has no profile option; use a rule.
 
 ## Rules and precedence
 
@@ -184,6 +207,11 @@ browser = "firefox.desktop"
 [[rule]]
 domain = "example.org"
 browser = "chromium.desktop"
+
+[[rule]]
+domain = "github.com"
+browser = "google-chrome.desktop"
+profile = "Default"   # optional: a profile ID, see `omaroute profiles`
 ```
 
 A malformed config is ignored when opening links (a warning is printed and the picker is used), while CLI commands report the error.
@@ -252,6 +280,7 @@ Layout:
 | --- | --- |
 | `src/main.rs` | CLI parsing, `setup`, link handling |
 | `src/config.rs` | Config file, rule resolution |
+| `src/profiles.rs` | Browser profile discovery and launch flags |
 | `src/url.rs` | URL validation and host extraction |
 | `src/source.rs` | Focused-app detection via Hyprland |
 | `src/picker.rs`, `src/theme.rs`, `data/picker.css` | GTK4 layer-shell picker and theming |

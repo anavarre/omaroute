@@ -570,3 +570,73 @@ fn setup_does_not_save_omarchys_router_as_the_previous_browser() {
     sb.run(&["setup"]).assert_ok();
     assert!(!sb.path("state/omaroute/previous-browser").exists());
 }
+
+// ---- profiles --------------------------------------------------------------------------------
+
+fn chrome_sandbox() -> Sandbox {
+    let sb = sandbox();
+    sb.add_browser("google-chrome", "Google Chrome");
+    let state = sb.path("config/google-chrome/Local State");
+    fs::create_dir_all(state.parent().unwrap()).unwrap();
+    fs::write(state, r#"{"profile":{"info_cache":{"Default":{"name":"Work"},"Profile 1":{"name":"Perso"}}}}"#).unwrap();
+    sb
+}
+
+#[test]
+fn profiles_lists_browser_profiles() {
+    let sb = chrome_sandbox();
+    let r = sb.run(&["profiles", "google-chrome"]);
+    r.assert_ok();
+    assert_eq!(r.stdout(), "google-chrome.desktop\tDefault\tWork\ngoogle-chrome.desktop\tProfile 1\tPerso\n");
+    assert_eq!(sb.run(&["profiles"]).stdout(), r.stdout(), "browsers without profiles print nothing");
+}
+
+#[test]
+fn set_profile_stores_the_profile_id_resolved_from_its_name() {
+    let sb = chrome_sandbox();
+    sb.run(&["set", "--domain", "Example.org", "--profile", "perso", "google-chrome"]).assert_ok();
+    let cfg = sb.read_config();
+    assert!(cfg.contains("profile = \"Profile 1\""), "{cfg}");
+    assert_eq!(sb.run(&["list"]).stdout(), "app=* domain=example.org -> google-chrome.desktop profile=Profile 1\n");
+}
+
+#[test]
+fn set_profile_rejects_unknown_profiles_and_unsupported_browsers() {
+    let sb = chrome_sandbox();
+    sb.run(&["set", "--domain", "a.com", "--profile", "nope", "google-chrome"]).assert_fail("not found");
+    sb.add_browser("epiphany", "Web");
+    sb.run(&["set", "--domain", "a.com", "--profile", "x", "epiphany"]).assert_fail("not supported");
+    sb.run(&["set", "--domain", "a.com", "--profile"]).assert_fail("needs a value");
+    assert_eq!(sb.read_config(), "");
+}
+
+#[test]
+fn rule_with_profile_launches_the_browser_with_that_profile() {
+    let sb = chrome_sandbox();
+    sb.write_config("[[rule]]\ndomain = \"work.com\"\nbrowser = \"google-chrome.desktop\"\nprofile = \"Default\"\n");
+    sb.run(&["https://app.work.com/x?a=1"]).assert_ok();
+    assert_eq!(sb.wait_for_launches(1), ["google-chrome --profile-directory=Default https://app.work.com/x?a=1"]);
+}
+
+#[test]
+fn rule_with_vanished_profile_fails_instead_of_launching() {
+    let sb = chrome_sandbox();
+    sb.write_config("[[rule]]\ndomain = \"work.com\"\nbrowser = \"google-chrome.desktop\"\nprofile = \"--evil\"\n");
+    sb.run(&["https://work.com/"]).assert_fail("not found");
+    assert!(sb.settle_launches().is_empty());
+}
+
+#[test]
+fn same_domain_routes_to_different_profiles_by_app() {
+    let sb = chrome_sandbox();
+    sb.run(&["set", "--domain", "github.com", "--profile", "Work", "google-chrome"]).assert_ok();
+    sb.run(&["set", "--app", "mail", "--domain", "github.com", "--profile", "Perso", "google-chrome"]).assert_ok();
+    sb.run(&["https://github.com/a"]).assert_ok();
+    sb.run(&["https://github.com/b", "--app", "mail"]).assert_ok();
+    let mut got = sb.wait_for_launches(2);
+    got.sort();
+    assert_eq!(got, [
+        "google-chrome --profile-directory=Default https://github.com/a",
+        "google-chrome --profile-directory=Profile 1 https://github.com/b",
+    ]);
+}

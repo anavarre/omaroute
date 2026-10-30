@@ -16,6 +16,16 @@ pub struct Rule {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,
     pub browser: String,
+    /// Profile within `browser` (see `profiles`); None opens the browser's own choice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+}
+
+/// Where a link goes: a browser, and optionally one of its profiles.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Target<'a> {
+    pub browser: &'a str,
+    pub profile: Option<&'a str>,
 }
 
 fn dir(var: &str, fallback: &str) -> PathBuf {
@@ -79,21 +89,21 @@ impl Config {
     }
 
     /// Precedence: app+domain, app, domain, default.
-    pub fn resolve(&self, app: Option<&str>, host: &str) -> Option<&str> {
+    pub fn resolve(&self, app: Option<&str>, host: &str) -> Option<Target<'_>> {
         let app_rules = || self.rules.iter().filter(|r| r.app.is_some() && r.app.as_deref() == app);
         let dom = |r: &&Rule| r.domain.as_deref().is_some_and(|d| domain_matches(host, d));
         app_rules()
             .find(dom)
             .or_else(|| app_rules().find(|r| r.domain.is_none()))
             .or_else(|| self.rules.iter().filter(|r| r.app.is_none()).find(dom))
-            .map(|r| r.browser.as_str())
-            .or((!self.default.is_empty()).then_some(self.default.as_str()))
+            .map(|r| Target { browser: &r.browser, profile: r.profile.as_deref() })
+            .or((!self.default.is_empty()).then_some(Target { browser: &self.default, profile: None }))
     }
 
     /// Insert or replace the rule with the same (app, domain) key.
-    pub fn set(&mut self, app: Option<String>, domain: Option<String>, browser: String) {
+    pub fn set(&mut self, app: Option<String>, domain: Option<String>, browser: String, profile: Option<String>) {
         self.unset(app.as_deref(), domain.as_deref());
-        self.rules.push(Rule { app, domain, browser });
+        self.rules.push(Rule { app, domain, browser, profile });
     }
 
     pub fn unset(&mut self, app: Option<&str>, domain: Option<&str>) -> bool {
@@ -107,37 +117,64 @@ impl Config {
 mod tests {
     use super::*;
 
+    fn browser<'a>(c: &'a Config, app: Option<&str>, host: &str) -> Option<&'a str> {
+        c.resolve(app, host).map(|t| t.browser)
+    }
+
     fn cfg() -> Config {
         let mut c = Config::default();
-        c.set(Some("slack".into()), None, "chrome.desktop".into());
-        c.set(Some("slack".into()), Some("github.com".into()), "firefox.desktop".into());
-        c.set(None, Some("example.org".into()), "brave.desktop".into());
+        c.set(Some("slack".into()), None, "chrome.desktop".into(), None);
+        c.set(Some("slack".into()), Some("github.com".into()), "firefox.desktop".into(), None);
+        c.set(None, Some("example.org".into()), "brave.desktop".into(), None);
         c
     }
 
     #[test]
     fn precedence() {
         let c = cfg();
-        assert_eq!(c.resolve(Some("slack"), "github.com"), Some("firefox.desktop"));
-        assert_eq!(c.resolve(Some("slack"), "gist.github.com"), Some("firefox.desktop"));
-        assert_eq!(c.resolve(Some("slack"), "notgithub.com"), Some("chrome.desktop"));
-        assert_eq!(c.resolve(Some("slack"), "example.org"), Some("chrome.desktop"));
-        assert_eq!(c.resolve(Some("other"), "example.org"), Some("brave.desktop"));
-        assert_eq!(c.resolve(None, "example.org"), Some("brave.desktop"));
-        assert_eq!(c.resolve(Some("other"), "nope.com"), None);
+        assert_eq!(browser(&c, Some("slack"), "github.com"), Some("firefox.desktop"));
+        assert_eq!(browser(&c, Some("slack"), "gist.github.com"), Some("firefox.desktop"));
+        assert_eq!(browser(&c, Some("slack"), "notgithub.com"), Some("chrome.desktop"));
+        assert_eq!(browser(&c, Some("slack"), "example.org"), Some("chrome.desktop"));
+        assert_eq!(browser(&c, Some("other"), "example.org"), Some("brave.desktop"));
+        assert_eq!(browser(&c, None, "example.org"), Some("brave.desktop"));
+        assert_eq!(browser(&c, Some("other"), "nope.com"), None);
+    }
+
+    #[test]
+    fn rule_profile_is_returned_and_default_has_none() {
+        let mut c = Config { default: "d.desktop".into(), rules: vec![] };
+        c.set(None, Some("work.com".into()), "chrome.desktop".into(), Some("Default".into()));
+        c.set(None, Some("home.com".into()), "chrome.desktop".into(), None);
+        assert_eq!(c.resolve(None, "x.work.com"), Some(Target { browser: "chrome.desktop", profile: Some("Default") }));
+        assert_eq!(c.resolve(None, "home.com").unwrap().profile, None);
+        assert_eq!(c.resolve(None, "other.com"), Some(Target { browser: "d.desktop", profile: None }));
+        c.set(None, Some("work.com".into()), "chrome.desktop".into(), None);
+        assert_eq!(c.resolve(None, "work.com").unwrap().profile, None, "set replaces the profile too");
+    }
+
+    #[test]
+    fn profile_roundtrips_through_toml() {
+        let mut c = Config::default();
+        c.set(None, Some("a.com".into()), "b.desktop".into(), Some("Profile 1".into()));
+        let text = toml::to_string_pretty(&c).unwrap();
+        assert!(text.contains("profile = \"Profile 1\""));
+        assert_eq!(toml::from_str::<Config>(&text).unwrap(), c);
+        let plain: Config = toml::from_str("[[rule]]\ndomain = \"a.com\"\nbrowser = \"b.desktop\"").unwrap();
+        assert_eq!(plain.rules[0].profile, None);
     }
 
     #[test]
     fn default_fallback() {
         let mut c = cfg();
         c.default = "zen.desktop".into();
-        assert_eq!(c.resolve(None, "nope.com"), Some("zen.desktop"));
+        assert_eq!(browser(&c, None, "nope.com"), Some("zen.desktop"));
     }
 
     #[test]
     fn set_replaces_and_roundtrips() {
         let mut c = cfg();
-        c.set(Some("slack".into()), None, "zen.desktop".into());
+        c.set(Some("slack".into()), None, "zen.desktop".into(), None);
         assert_eq!(c.rules.len(), 3);
         let text = toml::to_string_pretty(&c).unwrap();
         assert_eq!(toml::from_str::<Config>(&text).unwrap(), c);
@@ -148,54 +185,54 @@ mod tests {
     #[test]
     fn app_rule_with_domain_does_not_leak_to_other_domains() {
         let mut c = Config::default();
-        c.set(Some("slack".into()), Some("github.com".into()), "firefox.desktop".into());
-        assert_eq!(c.resolve(Some("slack"), "github.com"), Some("firefox.desktop"));
-        assert_eq!(c.resolve(Some("slack"), "example.org"), None);
-        assert_eq!(c.resolve(None, "github.com"), None);
-        assert_eq!(c.resolve(Some("other"), "github.com"), None);
+        c.set(Some("slack".into()), Some("github.com".into()), "firefox.desktop".into(), None);
+        assert_eq!(browser(&c, Some("slack"), "github.com"), Some("firefox.desktop"));
+        assert_eq!(browser(&c, Some("slack"), "example.org"), None);
+        assert_eq!(browser(&c, None, "github.com"), None);
+        assert_eq!(browser(&c, Some("other"), "github.com"), None);
     }
 
     #[test]
     fn app_domain_beats_app_only_beats_domain_only_beats_default() {
         let mut c = Config { default: "d.desktop".into(), rules: vec![] };
-        assert_eq!(c.resolve(Some("a"), "x.com"), Some("d.desktop"));
-        c.set(None, Some("x.com".into()), "dom.desktop".into());
-        assert_eq!(c.resolve(Some("a"), "x.com"), Some("dom.desktop"));
-        c.set(Some("a".into()), None, "app.desktop".into());
-        assert_eq!(c.resolve(Some("a"), "x.com"), Some("app.desktop"));
-        c.set(Some("a".into()), Some("x.com".into()), "both.desktop".into());
-        assert_eq!(c.resolve(Some("a"), "x.com"), Some("both.desktop"));
+        assert_eq!(browser(&c, Some("a"), "x.com"), Some("d.desktop"));
+        c.set(None, Some("x.com".into()), "dom.desktop".into(), None);
+        assert_eq!(browser(&c, Some("a"), "x.com"), Some("dom.desktop"));
+        c.set(Some("a".into()), None, "app.desktop".into(), None);
+        assert_eq!(browser(&c, Some("a"), "x.com"), Some("app.desktop"));
+        c.set(Some("a".into()), Some("x.com".into()), "both.desktop".into(), None);
+        assert_eq!(browser(&c, Some("a"), "x.com"), Some("both.desktop"));
     }
 
     #[test]
     fn rule_order_does_not_change_precedence() {
         let mut c = Config::default();
-        c.rules.push(Rule { app: Some("a".into()), domain: Some("x.com".into()), browser: "both".into() });
-        c.rules.push(Rule { app: Some("a".into()), domain: None, browser: "app".into() });
-        c.rules.push(Rule { app: None, domain: Some("x.com".into()), browser: "dom".into() });
-        assert_eq!(c.resolve(Some("a"), "x.com"), Some("both"));
+        c.rules.push(Rule { app: Some("a".into()), domain: Some("x.com".into()), browser: "both".into(), profile: None });
+        c.rules.push(Rule { app: Some("a".into()), domain: None, browser: "app".into(), profile: None });
+        c.rules.push(Rule { app: None, domain: Some("x.com".into()), browser: "dom".into(), profile: None });
+        assert_eq!(browser(&c, Some("a"), "x.com"), Some("both"));
         c.rules.reverse();
-        assert_eq!(c.resolve(Some("a"), "x.com"), Some("both"));
+        assert_eq!(browser(&c, Some("a"), "x.com"), Some("both"));
     }
 
     #[test]
     fn no_app_never_matches_app_rules() {
         let mut c = Config::default();
-        c.set(Some("slack".into()), None, "chrome.desktop".into());
-        assert_eq!(c.resolve(None, "x.com"), None);
+        c.set(Some("slack".into()), None, "chrome.desktop".into(), None);
+        assert_eq!(browser(&c, None, "x.com"), None);
     }
 
     #[test]
     fn rule_without_app_or_domain_is_inert() {
         let mut c = Config::default();
-        c.set(None, None, "x.desktop".into());
-        assert_eq!(c.resolve(None, "a.com"), None);
-        assert_eq!(c.resolve(Some("a"), "a.com"), None);
+        c.set(None, None, "x.desktop".into(), None);
+        assert_eq!(browser(&c, None, "a.com"), None);
+        assert_eq!(browser(&c, Some("a"), "a.com"), None);
     }
 
     #[test]
     fn empty_config_resolves_nothing() {
-        assert_eq!(Config::default().resolve(Some("a"), "a.com"), None);
+        assert_eq!(browser(&Config::default(), Some("a"), "a.com"), None);
     }
 
     #[test]
@@ -212,9 +249,9 @@ mod tests {
     #[test]
     fn set_keeps_distinct_keys_apart() {
         let mut c = Config::default();
-        c.set(Some("a".into()), None, "1".into());
-        c.set(None, Some("a".into()), "2".into());
-        c.set(Some("a".into()), Some("a".into()), "3".into());
+        c.set(Some("a".into()), None, "1".into(), None);
+        c.set(None, Some("a".into()), "2".into(), None);
+        c.set(Some("a".into()), Some("a".into()), "3".into(), None);
         assert_eq!(c.rules.len(), 3);
     }
 
@@ -225,7 +262,7 @@ mod tests {
         assert!(!c.unset(None, None));
         assert_eq!(c.rules.len(), 3);
         assert!(c.unset(Some("slack"), Some("github.com")));
-        assert_eq!(c.resolve(Some("slack"), "github.com"), Some("chrome.desktop"));
+        assert_eq!(browser(&c, Some("slack"), "github.com"), Some("chrome.desktop"));
         assert!(c.unset(None, Some("example.org")));
         assert_eq!(c.rules.len(), 1);
     }
@@ -254,7 +291,7 @@ mod tests {
         assert_eq!(c.default, "zen.desktop");
         assert_eq!(c.rules.len(), 3);
         assert_eq!(c.rules[1].app, None);
-        assert_eq!(c.resolve(Some("slack"), "github.com"), Some("firefox.desktop"));
+        assert_eq!(browser(&c, Some("slack"), "github.com"), Some("firefox.desktop"));
     }
 
     #[test]
@@ -270,7 +307,7 @@ mod tests {
         let text = toml::to_string_pretty(&Config::default()).unwrap();
         assert_eq!(text.trim(), "");
         let mut c = Config::default();
-        c.set(None, Some("a.com".into()), "b.desktop".into());
+        c.set(None, Some("a.com".into()), "b.desktop".into(), None);
         let text = toml::to_string_pretty(&c).unwrap();
         assert!(!text.contains("default"));
         assert!(!text.contains("app ="));

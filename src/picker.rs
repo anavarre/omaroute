@@ -16,6 +16,8 @@ pub struct Browser {
     pub id: String,
     pub name: String,
     pub icon: Option<gio::Icon>,
+    /// Profile this entry opens, if the browser was split into profiles.
+    pub profile: Option<String>,
 }
 
 const STRUCTURE_CSS: &str = include_str!("../data/picker.css");
@@ -25,8 +27,8 @@ fn css() -> String {
 }
 
 /// Show the picker; None if cancelled.
-pub fn run(app: Option<&str>, host: &str, browsers: Vec<Browser>) -> Option<(String, Scope)> {
-    let result: Rc<RefCell<Option<(String, Scope)>>> = Rc::default();
+pub fn run(app: Option<&str>, host: &str, browsers: Vec<Browser>) -> Option<(String, Option<String>, Scope)> {
+    let result: Rc<RefCell<Option<(String, Option<String>, Scope)>>> = Rc::default();
     let out = result.clone();
     let (app, host) = (app.map(str::to_owned), host.to_owned());
     let browsers = Rc::new(browsers);
@@ -80,7 +82,7 @@ fn build(
     app: Option<&str>,
     host: &str,
     browsers: Rc<Vec<Browser>>,
-    result: Rc<RefCell<Option<(String, Scope)>>>,
+    result: Rc<RefCell<Option<(String, Option<String>, Scope)>>>,
 ) {
     let provider = gtk::CssProvider::new();
     provider.load_from_string(&css());
@@ -157,7 +159,7 @@ fn build(
     let finish: Rc<dyn Fn(usize)> = {
         let (window, browsers, scopes, scope_idx) = (window.clone(), browsers.clone(), scopes.clone(), scope_idx.clone());
         Rc::new(move |i| {
-            *result.borrow_mut() = Some((browsers[i].id.clone(), scopes[scope_idx.get()].1));
+            *result.borrow_mut() = Some((browsers[i].id.clone(), browsers[i].profile.clone(), scopes[scope_idx.get()].1));
             window.close();
         })
     };

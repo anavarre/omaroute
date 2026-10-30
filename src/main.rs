@@ -1,12 +1,13 @@
 mod config;
 mod picker;
+mod profiles;
 mod source;
 mod theme;
 mod url;
 
-use config::{Config, config_dir, data_dir, state_dir};
+use config::{Config, Target, config_dir, data_dir, state_dir};
 use gtk4::{gio, prelude::*};
-use std::{env, fs, process::{Command, exit}};
+use std::{env, fs, os::unix::process::CommandExt, process::{Command, Stdio, exit}};
 
 #[cfg(test)]
 mod test_support;
@@ -18,7 +19,8 @@ Usage:
   omaroute <url> [--app NAME]                 open a link (this is what the system calls)
   omaroute list                               show rules
   omaroute browsers                           show installed browsers
-  omaroute set [--app A] [--domain D] <browser>   add/replace a rule
+  omaroute profiles [browser]                 show browser profiles
+  omaroute set [--app A] [--domain D] [--profile P] <browser>   add/replace a rule
   omaroute unset [--app A] [--domain D]       remove a rule
   omaroute default [browser|--clear]          get/set the fallback browser
   omaroute setup [--undo]                     register as default browser
@@ -56,20 +58,100 @@ fn browser_info(id: &str) -> Result<gio_unix::DesktopAppInfo, String> {
     Ok(info)
 }
 
-fn launch(id: &str, url: &str) {
+/// Turn an Exec= command line into an argv: the URL replaces its `%u`/`%U`/`%f`/`%F` field code
+/// (`extra` goes right before it), every other field code is dropped and `%%` becomes `%`.
+/// Without a URL field code the extra arguments and the URL are appended.
+fn expand_exec(argv: &[String], extra: &[String], url: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut placed = false;
+    for a in argv {
+        if matches!(a.as_str(), "%u" | "%U" | "%f" | "%F") {
+            out.extend_from_slice(extra);
+            out.push(url.to_owned());
+            placed = true;
+            continue;
+        }
+        let mut arg = String::new();
+        let mut chars = a.chars();
+        while let Some(c) = chars.next() {
+            match (c, chars.next()) {
+                ('%', Some('%')) => arg.push('%'),
+                ('%', _) => {}
+                (c, Some(n)) => arg.extend([c, n]),
+                (c, None) => arg.push(c),
+            }
+        }
+        out.push(arg);
+    }
+    if !placed {
+        out.extend_from_slice(extra);
+        out.push(url.to_owned());
+    }
+    out
+}
+
+fn launch(id: &str, profile: Option<&str>, url: &str) {
     let info = browser_info(id).unwrap_or_else(|e| fail(&e));
-    if let Err(e) = info.launch_uris(&[url], None::<&gio::AppLaunchContext>) {
+    let Some(wanted) = profile else {
+        if let Err(e) = info.launch_uris(&[url], None::<&gio::AppLaunchContext>) {
+            fail(&format!("could not launch {id}: {e}"));
+        }
+        return;
+    };
+    // The profile is looked up among the browser's real profiles, so only a known profile
+    // ever becomes a command-line argument, whatever the config file says.
+    let profile = profiles::find(id, wanted).unwrap_or_else(|e| fail(&e));
+    let argv = info.commandline()
+        .and_then(|c| gtk4::glib::shell_parse_argv(c).ok())
+        .map(|v| v.iter().map(|a| a.to_string_lossy().into_owned()).collect::<Vec<_>>())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| fail(&format!("could not read the command line of {id}")));
+    let argv = expand_exec(&argv, &profiles::args(id, &profile), url);
+    // No shell, and its own process group so it outlives us.
+    let started = Command::new(&argv[0]).args(&argv[1..]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn();
+    if let Err(e) = started {
         fail(&format!("could not launch {id}: {e}"));
     }
 }
 
+/// Installed browsers, one entry each.
 fn browsers() -> Vec<picker::Browser> {
     gio::AppInfo::recommended_for_type("x-scheme-handler/https")
         .into_iter()
         .filter(|a| a.should_show() && a.id().is_some_and(|id| id != SELF_ID))
         .filter(is_browser)
-        .map(|a| picker::Browser { id: a.id().unwrap().to_string(), name: a.name().to_string(), icon: a.icon() })
+        .map(|a| picker::Browser { id: a.id().unwrap().to_string(), name: a.name().to_string(), icon: a.icon(), profile: None })
         .collect()
+}
+
+/// What the picker offers: browsers with several profiles get one entry per profile.
+fn picker_entries() -> Vec<picker::Browser> {
+    browsers().into_iter().flat_map(|b| {
+        let found = profiles::list(&b.id);
+        if found.len() < 2 {
+            return vec![b];
+        }
+        found.into_iter().map(|p| picker::Browser {
+            id: b.id.clone(),
+            name: format!("{} \u{2014} {}", b.name, p.name),
+            icon: b.icon.clone(),
+            profile: Some(p.id),
+        }).collect()
+    }).collect()
+}
+
+/// Remove `--name value` from `args` and return the value (as typed, not lowercased).
+fn take_flag(args: &[String], name: &str) -> (Option<String>, Vec<String>) {
+    let (mut val, mut rest) = (None, Vec::new());
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == name {
+            val = Some(it.next().unwrap_or_else(|| fail(&format!("{a} needs a value"))).clone());
+        } else {
+            rest.push(a.clone());
+        }
+    }
+    (val, rest)
 }
 
 /// Parse `--app X` / `--domain Y` style flags; returns (flags, positional args).
@@ -97,27 +179,27 @@ fn handle_url(args: &[String]) {
         Config::default()
     });
 
-    if let Some(id) = cfg.resolve(app.as_deref(), &host) {
-        return launch(id, url);
+    if let Some(Target { browser, profile }) = cfg.resolve(app.as_deref(), &host) {
+        return launch(browser, profile, url);
     }
-    let list = browsers();
+    let list = picker_entries();
     if list.is_empty() {
         fail("no browsers found");
     }
-    let Some((id, scope)) = picker::run(app.as_deref(), &host, list) else { return };
+    let Some((id, profile, scope)) = picker::run(app.as_deref(), &host, list) else { return };
     let (a, d) = (app.clone(), Some(host.clone()));
     match scope {
         picker::Scope::Once => {}
-        picker::Scope::App => cfg.set(a, None, id.clone()),
-        picker::Scope::AppDomain => cfg.set(a, d, id.clone()),
-        picker::Scope::Domain => cfg.set(None, d, id.clone()),
+        picker::Scope::App => cfg.set(a, None, id.clone(), profile.clone()),
+        picker::Scope::AppDomain => cfg.set(a, d, id.clone(), profile.clone()),
+        picker::Scope::Domain => cfg.set(None, d, id.clone(), profile.clone()),
     }
     if scope != picker::Scope::Once
         && let Err(e) = cfg.save()
     {
         eprintln!("omaroute: could not save config: {e}");
     }
-    launch(&id, url);
+    launch(&id, profile.as_deref(), url);
 }
 
 fn load() -> Config {
@@ -245,17 +327,32 @@ fn main() {
             let c = load();
             if !c.default.is_empty() { println!("default -> {}", c.default) }
             for r in &c.rules {
-                println!("app={} domain={} -> {}", r.app.as_deref().unwrap_or("*"), r.domain.as_deref().unwrap_or("*"), r.browser);
+                let profile = r.profile.as_deref().map(|p| format!(" profile={p}")).unwrap_or_default();
+                println!("app={} domain={} -> {}{profile}", r.app.as_deref().unwrap_or("*"), r.domain.as_deref().unwrap_or("*"), r.browser);
             }
         }
         "browsers" => browsers().iter().for_each(|b| println!("{}\t{}", b.id, b.name)),
+        "profiles" => {
+            let ids = match rest.first() {
+                Some(b) => vec![normalize(b)],
+                None => browsers().into_iter().map(|b| b.id).collect(),
+            };
+            for id in ids {
+                for p in profiles::list(&id) {
+                    println!("{id}\t{}\t{}", p.id, p.name);
+                }
+            }
+        }
         "set" | "unset" => {
-            let (f, pos) = flags(rest, &["--app", "--domain"]);
+            let (profile, rest) = if cmd == "set" { take_flag(rest, "--profile") } else { (None, rest.to_vec()) };
+            let (f, pos) = flags(&rest, &["--app", "--domain"]);
             if f[0].is_none() && f[1].is_none() { fail("need --app and/or --domain") }
             let mut c = load();
             if cmd == "set" {
                 let [b] = pos.as_slice() else { fail("expected one browser") };
-                c.set(f[0].clone(), f[1].clone(), checked_browser(b));
+                let b = checked_browser(b);
+                let profile = profile.map(|p| profiles::find(&b, &p).unwrap_or_else(|e| fail(&e)).id);
+                c.set(f[0].clone(), f[1].clone(), b, profile);
             } else if !c.unset(f[0].as_deref(), f[1].as_deref()) {
                 fail("no such rule");
             }
@@ -332,8 +429,28 @@ mod tests {
     }
 
     #[test]
+    fn expand_exec_puts_profile_args_before_the_url() {
+        let extra = args(&["--profile-directory=Profile 1"]);
+        assert_eq!(expand_exec(&args(&["chrome", "%U"]), &extra, "https://a.com"), args(&["chrome", "--profile-directory=Profile 1", "https://a.com"]));
+        assert_eq!(expand_exec(&args(&["env", "X=1", "chrome", "--new-window", "%u"]), &extra, "u"), args(&["env", "X=1", "chrome", "--new-window", "--profile-directory=Profile 1", "u"]));
+    }
+
+    #[test]
+    fn expand_exec_appends_without_a_url_field_and_drops_other_codes() {
+        let extra = args(&["-P", "w"]);
+        assert_eq!(expand_exec(&args(&["ff", "%i", "--x=%k", "100%%"]), &extra, "u"), args(&["ff", "", "--x=", "100%", "-P", "w", "u"]));
+    }
+
+    #[test]
+    fn take_flag_keeps_case_and_removes_the_pair() {
+        let (v, rest) = take_flag(&args(&["--app", "a", "--profile", "Profile 1", "b"]), "--profile");
+        assert_eq!(v.as_deref(), Some("Profile 1"));
+        assert_eq!(rest, args(&["--app", "a", "b"]));
+    }
+
+    #[test]
     fn usage_documents_every_command() {
-        for c in ["list", "browsers", "set", "unset", "default", "setup", "--app", "--domain"] {
+        for c in ["list", "browsers", "profiles", "set", "unset", "default", "setup", "--app", "--domain", "--profile"] {
             assert!(USAGE.contains(c), "{c}");
         }
     }
